@@ -1,0 +1,16 @@
+[Unit]
+Description=Simple Music Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/path/to/SimpleMusicBot
+EnvironmentFile=/path/to/SimpleMusicBot/.env
+Environment="PATH=/root/.deno/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/usr/bin/python3 /path/to/SimpleMusicBot/bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
