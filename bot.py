@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os, asyncio, logging, re
 from pyrogram import Client, filters, idle
-from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from pyrogram.errors import UserNotParticipant
 from pyrogram.enums import ChatType
 from pytgcalls import PyTgCalls
@@ -45,13 +45,14 @@ def clean_artist(title, uploader):
 
 def download_audio(q):
     opts = {
-        'format': 'bestaudio',
+        'format': 'bestaudio/best',
         'outtmpl': f'{downloads_dir}/%(id)s.%(ext)s',
         'quiet': True,
+        'no_warnings': True,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '320',
+            'preferredquality': '192',
         }],
     }
     # Use SoundCloud for search, YouTube for direct links
@@ -62,7 +63,24 @@ def download_audio(q):
     with yt_dlp.YoutubeDL(opts) as ydl:
         i = ydl.extract_info(search, download=True)
         if 'entries' in i: i = i['entries'][0]
-        filename = ydl.prepare_filename(i).rsplit('.', 1)[0] + '.mp3'
+        # Find actual mp3 file
+        import glob
+        vid_id = i.get('id', 'unknown')
+        mp3_files = glob.glob(f'{downloads_dir}/{vid_id}.*')
+        filename = None
+        for f in mp3_files:
+            if f.endswith('.mp3'):
+                filename = f
+                break
+        if not filename:
+            # Fallback: manually construct
+            filename = f'{downloads_dir}/{vid_id}.mp3'
+        if not os.path.exists(filename):
+            # Try without postprocessor - just use raw audio
+            raw_files = glob.glob(f'{downloads_dir}/{vid_id}.*')
+            if raw_files:
+                filename = raw_files[0]
+        logger.info(f"Downloaded file: {filename} exists={os.path.exists(filename)}")
         return {
             'file': filename,
             'title': i.get('title', 'Unknown'),
@@ -195,7 +213,8 @@ async def start(_, m: Message):
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add To Group", url="https://t.me/MUSlCXBOT?startgroup=true")],
         [InlineKeyboardButton("📚 Commands", callback_data="help"),
-         InlineKeyboardButton("👤 Owner", url="https://t.me/Vclub_Tech")]
+         InlineKeyboardButton("💬 Support", url="https://t.me/Vclub_Tech")],
+        [InlineKeyboardButton("👤 Owner", url="https://t.me/Vclub_Tech")]
     ])
     
     text = (
@@ -272,18 +291,36 @@ async def play(_, m: Message):
         if cid not in queues: queues[cid] = []
         
         if cid not in active:
-            try:
-                stream = AudioPiped(song['file'], HighQualityAudio())
-                await calls.join_group_call(cid, stream)
-                active[cid] = song
-                await msg.delete()
-                await send_now_playing(cid, song, [])
-                logger.info(f"Started: {song['title']}")
-            except GroupCallNotFound:
-                await msg.edit("❌ **Start voice chat!** 📞")
-            except Exception as e:
-                logger.error(f"Play error: {e}")
-                await msg.edit(f"❌ {e}")
+            # Try joining with retry logic for Telegram errors
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    stream = AudioPiped(song['file'], HighQualityAudio())
+                    await calls.join_group_call(cid, stream)
+                    active[cid] = song
+                    await msg.delete()
+                    await send_now_playing(cid, song, [])
+                    logger.info(f"Started: {song['title']}")
+                    break
+                except GroupCallNotFound:
+                    await msg.edit("❌ **Start voice chat first!** 📞")
+                    break
+                except Exception as e:
+                    err = str(e).lower()
+                    if "flood" in err or "internal" in err or "wait" in err:
+                        # Extract wait time if available
+                        import re
+                        wait_match = re.search(r'(\d+)\s*seconds?', str(e))
+                        wait_time = int(wait_match.group(1)) if wait_match else 10
+                        wait_time = min(wait_time, 60)  # Max 60s wait
+                        if attempt < max_retries - 1:
+                            await msg.edit(f"⏳ **Telegram rate limit!** Retrying in {wait_time}s... ({attempt+1}/{max_retries})")
+                            logger.warning(f"Flood wait {wait_time}s, retry {attempt+1}")
+                            await asyncio.sleep(wait_time)
+                            continue
+                    logger.error(f"Play error: {e}")
+                    await msg.edit(f"❌ **Error:** {str(e)[:150]}")
+                    break
         else:
             queues[cid].append(song)
             await msg.edit(f"➕ **Queued:** {song['title'][:50]}\n📍 Position: {len(queues[cid])}")
