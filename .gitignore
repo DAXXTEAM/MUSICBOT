@@ -6,3 +6,8 @@ __pycache__/
 /tmp/
 *.log
 .DS_Store
+*.bak
+gen.py
+*.session
+*.session-journal
+.env

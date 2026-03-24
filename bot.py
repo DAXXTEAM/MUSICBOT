@@ -3,6 +3,7 @@ import os, asyncio, logging, re
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant
+from pyrogram.enums import ChatType
 from pytgcalls import PyTgCalls
 from pytgcalls.types import AudioPiped, Update
 from pytgcalls.types.input_stream.quality import HighQualityAudio
@@ -53,7 +54,11 @@ def download_audio(q):
             'preferredquality': '320',
         }],
     }
-    search = f'ytsearch:{q}' if not q.startswith('http') else q
+    # Use SoundCloud for search, YouTube for direct links
+    if q.startswith('http'):
+        search = q
+    else:
+        search = f'scsearch:{q}'
     with yt_dlp.YoutubeDL(opts) as ydl:
         i = ydl.extract_info(search, download=True)
         if 'entries' in i: i = i['entries'][0]
@@ -70,15 +75,35 @@ def download_audio(q):
 async def ensure_assistant_joined(cid):
     try:
         await user.get_chat_member(cid, "me")
+        logger.info(f"Assistant already in {cid}")
         return True
     except UserNotParticipant:
-        try:
-            link = await app.export_chat_invite_link(cid)
-            await user.join_chat(link)
-            await asyncio.sleep(2)
-            return True
-        except: return False
-    except: return False
+        logger.info(f"Assistant not in {cid}, joining...")
+    except Exception as e:
+        logger.info(f"Check failed {cid}: {e}, trying join...")
+
+    # Method 1: Direct add by bot
+    try:
+        me = await user.get_me()
+        await app.add_chat_members(cid, me.id)
+        await asyncio.sleep(2)
+        logger.info(f"Added assistant to {cid}")
+        return True
+    except Exception as e:
+        logger.warning(f"Direct add failed: {e}")
+
+    # Method 2: Invite link
+    try:
+        link = await app.export_chat_invite_link(cid)
+        await user.join_chat(link)
+        await asyncio.sleep(2)
+        logger.info(f"Assistant joined via invite link")
+        return True
+    except Exception as e:
+        logger.warning(f"Invite join failed: {e}")
+
+    logger.error(f"All join methods failed for {cid}")
+    return False
 
 async def send_now_playing(cid, song, queue_list):
     caption = (
@@ -236,7 +261,7 @@ async def play(_, m: Message):
     msg = await m.reply("🔍 **Searching...**")
     
     try:
-        if m.chat.type in ["group", "supergroup"]:
+        if m.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
             if not await ensure_assistant_joined(cid):
                 return await msg.edit("❌ Make bot admin!")
         
@@ -315,12 +340,18 @@ async def on_end(_, u: Update):
     logger.info(f"Stream ended in {u.chat_id}")
     await play_next(u.chat_id)
 
-async def main():
+
+import asyncio
+
+async def _main():
     await app.start()
+    logger.info("Bot started")
     await user.start()
+    logger.info("Userbot started")
     await calls.start()
-    logger.info("🎵 LIVE!")
+    logger.info("PyTgCalls started")
+    logger.info("LIVE!")
     await idle()
 
 if __name__ == "__main__":
-    app.run(main())
+    asyncio.get_event_loop().run_until_complete(_main())
